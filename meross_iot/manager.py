@@ -11,6 +11,7 @@ from asyncio import TimeoutError
 from hashlib import md5
 from typing import Optional, List, TypeVar, Iterable, Callable, Awaitable
 
+import aiohttp
 import paho.mqtt.client as mqtt
 
 from meross_iot.controller.device import BaseDevice, HubDevice, GenericSubDevice
@@ -512,8 +513,16 @@ class MerossManager(object):
 
         :return:
         """
+
+        # Check if the command can be issued via the local LAN
+        use_http = False
+        target = self._device_registry.lookup_base_by_uuid(destination_device_uuid)
+        if target.local_ip is not None:
+            _LOGGER.info(f"Device {target} has Internal IP {target.local_ip}. Attempting local HTTP control...")
+            use_http = True
+
         # Only proceed if we are connected to the remote endpoint
-        if not self._mqtt_client.is_connected():
+        if not use_http and not self._mqtt_client.is_connected():
             _LOGGER.error("The MQTT client is not connected to the remote broker. Have you called async_init()?")
             raise UnconnectedError()
 
@@ -524,13 +533,19 @@ class MerossManager(object):
         fut = self._loop.create_future()
         self._pending_messages_futures[message_id] = fut
 
-        response = await self._async_send_and_wait_ack(future=fut,
-                                                       target_device_uuid=destination_device_uuid,
-                                                       message=message,
-                                                       timeout=timeout)
+        if use_http:
+            async with aiohttp.ClientSession() as session:
+                response = await session.post(url=f"http://{target.local_ip}/config", data=message)
+                _LOGGER.debug(f"Result recevied via HTTP call: {response}")
+
+        if response is None:
+            response = await self._async_send_and_wait_ack_mqtt(future=fut,
+                                                                target_device_uuid=destination_device_uuid,
+                                                                message=message,
+                                                                timeout=timeout)
         return response.get('payload')
 
-    async def _async_send_and_wait_ack(self, future: Future, target_device_uuid: str, message: dict, timeout: float):
+    async def _async_send_and_wait_ack_mqtt(self, future: Future, target_device_uuid: str, message: dict, timeout: float):
         md = self._mqtt_client.publish(topic=build_device_request_topic(target_device_uuid), payload=message)
         try:
             return await asyncio.wait_for(future, timeout, loop=self._loop)

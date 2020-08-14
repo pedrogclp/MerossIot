@@ -29,6 +29,12 @@ class SprayMode(Enum):
     INTERMITTENT = 2
 
 
+class CommandExecutionChannel(Enum):
+    AUTO = 0
+    MQTT = 1
+    HTTP = 2
+
+
 class ThermostatV3Mode(Enum):
     AUTO = 3
     COOL = 2
