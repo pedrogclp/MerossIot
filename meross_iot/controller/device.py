@@ -34,6 +34,7 @@ class BaseDevice(object):
         self._hwversion = kwargs.get('hdwareVersion')
         self._online = OnlineStatus(kwargs.get('onlineStatus', -1))
 
+        self._local_ip = None
         self._abilities = {}
         self._push_coros = []
 
@@ -162,7 +163,12 @@ class BaseDevice(object):
 
     async def async_handle_update(self, namespace: Namespace, data: dict) -> bool:
         # By design, the base class doe snot implement any update logic
+
         # TODO: we might update name/uuid/other stuff in here...
+        # Catch local-ip
+        if namespace == Namespace.SYSTEM_ALL:
+            self._local_ip = data.get('all', {}).get('system', {}).get('firmware', {}).get('innerIp')
+
         await self._fire_push_notification_event(namespace, data)
         return False
 
@@ -231,6 +237,10 @@ class BaseDevice(object):
         if len(res) == 1:
             return res[0]
         raise ValueError(f"Could not find channel by id or name = {channel_id_or_name}")
+
+    @property
+    def local_ip(self):
+        return self._local_ip
 
 
 class HubDevice(BaseDevice):
