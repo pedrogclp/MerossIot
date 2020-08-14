@@ -517,7 +517,7 @@ class MerossManager(object):
         # Check if the command can be issued via the local LAN
         use_http = False
         target = self._device_registry.lookup_base_by_uuid(destination_device_uuid)
-        if target.local_ip is not None:
+        if target is not None and target.local_ip is not None:
             _LOGGER.info(f"Device {target} has Internal IP {target.local_ip}. Attempting local HTTP control...")
             use_http = True
 
@@ -527,16 +527,25 @@ class MerossManager(object):
             raise UnconnectedError()
 
         # Build the mqtt message we will send to the broker
-        message, message_id = self._build_mqtt_message(method, namespace, payload)
+        #message, message_id = self._build_mqtt_message(method, namespace, payload)
+        data, message_id = self._build_mqtt_message(method, namespace, payload)
+        strdata = json.dumps(data)
+        message = strdata.encode("utf-8")
 
         # Create a future and perform the send/waiting to a task
         fut = self._loop.create_future()
         self._pending_messages_futures[message_id] = fut
 
+        response = None
         if use_http:
             async with aiohttp.ClientSession() as session:
-                response = await session.post(url=f"http://{target.local_ip}/config", data=message)
-                _LOGGER.debug(f"Result recevied via HTTP call: {response}")
+                try:
+                    http_response = await session.post(url=f"http://{target.local_ip}/config", json=data, timeout=0.5)
+                    _LOGGER.info(f"Local API call succeeded, status: {http_response.status}")
+                    data = await http_response.text()
+                    response = json.loads(data)
+                except:
+                    _LOGGER.warning("Could not contact local device via HTTP...")
 
         if response is None:
             response = await self._async_send_and_wait_ack_mqtt(future=fut,
@@ -602,8 +611,7 @@ class MerossManager(object):
                 },
             "payload": payload
         }
-        strdata = json.dumps(data)
-        return strdata.encode("utf-8"), messageId
+        return data, messageId
 
 
 class DeviceRegistry(object):
