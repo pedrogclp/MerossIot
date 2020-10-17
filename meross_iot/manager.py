@@ -5,15 +5,17 @@ import random
 import ssl
 import string
 import sys
+from abc import ABC
 from time import time
 from asyncio import Future, AbstractEventLoop
 from asyncio import TimeoutError
 from hashlib import md5
 from typing import Optional, List, TypeVar, Iterable, Callable, Awaitable, Tuple
-from typing import Optional, List, TypeVar, Iterable, Callable, Awaitable
 
 import aiohttp
 import paho.mqtt.client as mqtt
+from meross_iot.model.credentials import MerossCloudCreds
+
 from meross_iot.controller.device import BaseDevice, HubDevice, GenericSubDevice
 from meross_iot.device_factory import build_meross_device, build_meross_subdevice
 from meross_iot.http_api import MerossHttpClient
@@ -22,7 +24,6 @@ from meross_iot.model.exception import CommandTimeoutError, CommandError, RateLi
 from meross_iot.model.exception import UnconnectedError
 from meross_iot.model.http.device import HttpDeviceInfo
 from meross_iot.model.http.subdevice import HttpSubdeviceInfo
-from meross_iot.model.push.bind import BindPushNotification
 from meross_iot.model.push.factory import parse_push_notification
 from meross_iot.model.push.generic import GenericPushNotification
 from meross_iot.model.push.unbind import UnbindPushNotification
@@ -132,7 +133,7 @@ class RateLimitChecker(object):
         return RateLimitResult.NotLimited, 0
 
 
-class MerossManager(object):
+class MerossManager(ABC):
     """
     This class implements a full-features Meross Client, which provides device discovery and registry.
     *Note*: The manager must be initialized before invoking any of its discovery/registry methods. As soon as
@@ -140,7 +141,7 @@ class MerossManager(object):
     """
 
     def __init__(self,
-                 http_client: MerossHttpClient,
+                 creds: MerossCloudCreds,
                  auto_reconnect: Optional[bool] = True,
                  domain: Optional[str] = "iot.meross.com",
                  port: Optional[int] = 2001,
@@ -150,17 +151,18 @@ class MerossManager(object):
                  over_limit_threshold_percentage: float = 1000,
                  burst_requests_per_second_limit: int = 4,
                  requests_per_second_limit: int = 1,
+                 insecure_ssl: bool = False,
                  *args,
                  **kwords) -> None:
 
         # Store local attributes
         self.__initialized = False
-        self._http_client = http_client
-        self._cloud_creds = self._http_client.cloud_credentials
+        self._cloud_creds = creds
         self._auto_reconnect = auto_reconnect
         self._domain = domain
         self._port = port
         self._ca_cert = ca_cert
+        self._insecure_ssl = insecure_ssl
         self._app_id, self._client_id = generate_client_and_app_id()
         self._pending_messages_futures = {}
         self._device_registry = DeviceRegistry()
@@ -178,6 +180,7 @@ class MerossManager(object):
                                   keyfile=None, cert_reqs=ssl.CERT_REQUIRED,
                                   tls_version=ssl.PROTOCOL_TLS,
                                   ciphers=None)
+        self._mqtt_client.tls_insecure_set(self._insecure_ssl)
 
         # Setup synchronization primitives
         self._loop = asyncio.get_event_loop() if loop is None else loop
@@ -291,119 +294,6 @@ class MerossManager(object):
         _LOGGER.debug("Connected and subscribed to relevant topics")
 
         self.__initialized = True
-
-    async def async_device_discovery(self, update_subdevice_status: bool = True,
-                                     meross_device_uuid: str = None) -> None:
-        """
-        Fetch devices and online status from HTTP API. This method also notifies/updates local device online/offline
-        status.
-
-        :param meross_device_uuid: Meross UUID of the device that the user wants to discover (is already known). This parameter
-                            restricts the discovery only to that particular device. When None, all the devices
-                            reported by the HTTP api will be discovered.
-        :param update_subdevice_status When True, tells the manager to retrieve the HUB status in order to update
-               hub-subdevice online status, which would be UNKNOWN if not explicitly retrieved.
-
-        :return:
-        """
-        _LOGGER.info(f"\n\n------- Triggering HTTP discovery, filter_device: {meross_device_uuid} -------")
-        # List http devices
-        http_devices = await self._http_client.async_list_devices()
-
-        if meross_device_uuid is not None:
-            http_devices = filter(lambda d: d.uuid == meross_device_uuid, http_devices)
-
-        # Update state of local devices
-        discovered_new_http_devices = []
-        already_known_http_devices = {}
-        for hdevice in http_devices:
-            # Check if the device is already present into the registry
-            ldevice = self._device_registry.lookup_base_by_uuid(hdevice.uuid)
-            if ldevice is not None:
-                already_known_http_devices[hdevice] = ldevice
-            else:
-                # If the http_device was not locally registered, keep track of it as we will add it later.
-                discovered_new_http_devices.append(hdevice)
-
-        # Give some info
-        _LOGGER.info(f"The following devices were already known to me: {already_known_http_devices}")
-        _LOGGER.info(f"The following devices are new to me: {discovered_new_http_devices}")
-
-        # For every newly discovered device, retrieve its abilities and then build a corresponding wrapper.
-        # In the meantime, update state of the already known devices
-        # Do this in "parallel" with multiple tasks rather than executing every task singularly
-        tasks = []
-        for d in discovered_new_http_devices:
-            tasks.append(self._loop.create_task(self._async_enroll_new_http_dev(d)))
-        for hdevice, ldevice in already_known_http_devices.items():
-            tasks.append(self._loop.create_task(ldevice.update_from_http_state(hdevice)))
-
-        _LOGGER.info(f"Updating {len(already_known_http_devices)} known devices form HTTPINFO and fetching "
-                     f"data from {len(discovered_new_http_devices)} newly discovered devices...")
-        # Wait for factory to build all devices
-        enrolled_devices = await asyncio.gather(*tasks, loop=self._loop)
-        _LOGGER.info(f"Fetch and update done")
-
-        # Let's now handle HubDevices. For every HubDevice we have, we need to fetch new possible subdevices
-        # from the HTTP API
-        subdevtasks = []
-        hubs = []
-        for d in enrolled_devices:
-            if isinstance(d, HubDevice):
-                hubs.append(d)
-                subdevs = await self._http_client.async_list_hub_subdevices(hub_id=d.uuid)
-                for sd in subdevs:
-                    subdevtasks.append(self._loop.create_task(
-                        self._async_enroll_new_http_subdev(subdevice_info=sd,
-                                                           hub=d,
-                                                           hub_reported_abilities=d._abilities)))
-        # Wait for factory to build all devices
-        enrolled_subdevices = await asyncio.gather(*subdevtasks, loop=self._loop)
-
-        # We need to update the state of hubs in order to refresh subdevices online status
-        if update_subdevice_status:
-            for h in hubs:
-                await h.async_update()
-        _LOGGER.info(f"\n------- HTTP discovery ended -------\n")
-
-    async def _async_enroll_new_http_subdev(self,
-                                            subdevice_info: HttpSubdeviceInfo,
-                                            hub: HubDevice,
-                                            hub_reported_abilities: dict) -> Optional[GenericSubDevice]:
-        subdevice = build_meross_subdevice(http_subdevice_info=subdevice_info,
-                                           hub_uuid=hub.uuid,
-                                           hub_reported_abilities=hub_reported_abilities,
-                                           manager=self)
-        # Register the device to the hub
-        hub.register_subdevice(subdevice=subdevice)
-
-        # Enroll the device
-        self._device_registry.enroll_device(subdevice)
-        return subdevice
-
-    async def _async_enroll_new_http_dev(self, device_info: HttpDeviceInfo) -> Optional[BaseDevice]:
-        try:
-            # Only get abilities if the device is online.
-            if device_info.online_status != OnlineStatus.ONLINE:
-                _LOGGER.info(f"Could not retrieve abilities for device  {device_info.dev_name} ({device_info.uuid}). "
-                             f"This device won't be enrolled.")
-                return None
-            res_abilities = await self.async_execute_cmd(destination_device_uuid=device_info.uuid,
-                                                         method="GET",
-                                                         namespace=Namespace.SYSTEM_ABILITY,
-                                                         payload={})
-            abilities = res_abilities.get('ability')
-        except CommandTimeoutError:
-            _LOGGER.error(f"Failed to retrieve abilities for device {device_info.dev_name} ({device_info.uuid}). "
-                          f"This device won't be enrolled.")
-            return None
-
-        # Build a full-featured device using the given ability set
-        device = build_meross_device(http_device_info=device_info, device_abilities=abilities, manager=self)
-
-        # Enroll the device
-        self._device_registry.enroll_device(device)
-        return device
 
     def _on_connect(self, client, userdata, rc, other):
         # NOTE! This method is called by the paho-mqtt thread, thus any invocation to the
@@ -741,6 +631,131 @@ class MerossManager(object):
             "payload": payload
         }
         return data, messageId
+
+
+class LocalMerossManager(MerossManager):
+    def __init__(self, creds: MerossCloudCreds, *args, **kwords):
+        super().__init__(creds, *args, **kwords)
+
+
+class RemoteMerossManager(MerossManager):
+
+    def __init__(self, http_client: MerossHttpClient, *args, **kwords):
+        self._http_client = http_client
+        super().__init__(creds=self._http_client.cloud_credentials, *args, **kwords)
+
+    async def async_device_discovery(self, update_subdevice_status: bool = True,
+                                     meross_device_uuid: str = None) -> None:
+        """
+        Fetch devices and online status from HTTP API. This method also notifies/updates local device online/offline
+        status.
+
+        :param meross_device_uuid: Meross UUID of the device that the user wants to discover (is already known). This parameter
+                            restricts the discovery only to that particular device. When None, all the devices
+                            reported by the HTTP api will be discovered.
+        :param update_subdevice_status When True, tells the manager to retrieve the HUB status in order to update
+               hub-subdevice online status, which would be UNKNOWN if not explicitly retrieved.
+
+        :return:
+        """
+        _LOGGER.info(f"\n\n------- Triggering HTTP discovery, filter_device: {meross_device_uuid} -------")
+        # List http devices
+        http_devices = await self._http_client.async_list_devices()
+
+        if meross_device_uuid is not None:
+            http_devices = filter(lambda d: d.uuid == meross_device_uuid, http_devices)
+
+        # Update state of local devices
+        discovered_new_http_devices = []
+        already_known_http_devices = {}
+        for hdevice in http_devices:
+            # Check if the device is already present into the registry
+            ldevice = self._device_registry.lookup_base_by_uuid(hdevice.uuid)
+            if ldevice is not None:
+                already_known_http_devices[hdevice] = ldevice
+            else:
+                # If the http_device was not locally registered, keep track of it as we will add it later.
+                discovered_new_http_devices.append(hdevice)
+
+        # Give some info
+        _LOGGER.info(f"The following devices were already known to me: {already_known_http_devices}")
+        _LOGGER.info(f"The following devices are new to me: {discovered_new_http_devices}")
+
+        # For every newly discovered device, retrieve its abilities and then build a corresponding wrapper.
+        # In the meantime, update state of the already known devices
+        # Do this in "parallel" with multiple tasks rather than executing every task singularly
+        tasks = []
+        for d in discovered_new_http_devices:
+            tasks.append(self._loop.create_task(self._async_enroll_new_http_dev(d)))
+        for hdevice, ldevice in already_known_http_devices.items():
+            tasks.append(self._loop.create_task(ldevice.update_from_http_state(hdevice)))
+
+        _LOGGER.info(f"Updating {len(already_known_http_devices)} known devices form HTTPINFO and fetching "
+                     f"data from {len(discovered_new_http_devices)} newly discovered devices...")
+        # Wait for factory to build all devices
+        enrolled_devices = await asyncio.gather(*tasks, loop=self._loop)
+        _LOGGER.info(f"Fetch and update done")
+
+        # Let's now handle HubDevices. For every HubDevice we have, we need to fetch new possible subdevices
+        # from the HTTP API
+        subdevtasks = []
+        hubs = []
+        for d in enrolled_devices:
+            if isinstance(d, HubDevice):
+                hubs.append(d)
+                subdevs = await self._http_client.async_list_hub_subdevices(hub_id=d.uuid)
+                for sd in subdevs:
+                    subdevtasks.append(self._loop.create_task(
+                        self._async_enroll_new_http_subdev(subdevice_info=sd,
+                                                           hub=d,
+                                                           hub_reported_abilities=d._abilities)))
+        # Wait for factory to build all devices
+        enrolled_subdevices = await asyncio.gather(*subdevtasks, loop=self._loop)
+
+        # We need to update the state of hubs in order to refresh subdevices online status
+        if update_subdevice_status:
+            for h in hubs:
+                await h.async_update()
+        _LOGGER.info(f"\n------- HTTP discovery ended -------\n")
+
+    async def _async_enroll_new_http_subdev(self,
+                                            subdevice_info: HttpSubdeviceInfo,
+                                            hub: HubDevice,
+                                            hub_reported_abilities: dict) -> Optional[GenericSubDevice]:
+        subdevice = build_meross_subdevice(http_subdevice_info=subdevice_info,
+                                           hub_uuid=hub.uuid,
+                                           hub_reported_abilities=hub_reported_abilities,
+                                           manager=self)
+        # Register the device to the hub
+        hub.register_subdevice(subdevice=subdevice)
+
+        # Enroll the device
+        self._device_registry.enroll_device(subdevice)
+        return subdevice
+
+    async def _async_enroll_new_http_dev(self, device_info: HttpDeviceInfo) -> Optional[BaseDevice]:
+        try:
+            # Only get abilities if the device is online.
+            if device_info.online_status != OnlineStatus.ONLINE:
+                _LOGGER.info(f"Could not retrieve abilities for device  {device_info.dev_name} ({device_info.uuid}). "
+                             f"This device won't be enrolled.")
+                return None
+            res_abilities = await self.async_execute_cmd(destination_device_uuid=device_info.uuid,
+                                                         method="GET",
+                                                         namespace=Namespace.SYSTEM_ABILITY,
+                                                         payload={})
+            abilities = res_abilities.get('ability')
+        except CommandTimeoutError:
+            _LOGGER.error(f"Failed to retrieve abilities for device {device_info.dev_name} ({device_info.uuid}). "
+                          f"This device won't be enrolled.")
+            return None
+
+        # Build a full-featured device using the given ability set
+        device = build_meross_device(http_device_info=device_info, device_abilities=abilities, manager=self)
+
+        # Enroll the device
+        self._device_registry.enroll_device(device)
+        return device
 
 
 class DeviceRegistry(object):
