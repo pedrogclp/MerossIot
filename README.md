@@ -13,23 +13,22 @@ However, some devices _might work as expected even if they are not listed_ among
 In such cases, you're invited to open an issue and report tbe working/non-working status of your device.
 This will help us to keep track of new devices and current support status of the library.
 
-
 This library is still work in progress, therefore use it with caution.
-
-## Installation
-Due to the popularity of the library, I've decided to list it publicly on the Pipy index.
-So, the installation is as simple as typing the following command:
-
-```bash
-pip install meross_iot==0.4.0.0
-```
 
 ## Requirements
 This library requires __Python 3.7+__. Previous versions won't be supported by this library.
 In case working with previous versions of python is mandatory for your project, consider using 0.3.X.X versions
 of this library (although it's highly recommended to migrate to 0.4.X.X). 
 
-## Usage & Documentation
+## Installation
+Due to the popularity of the library, I've decided to list it publicly on the Pipy index.
+So, the installation is as simple as typing the following command:
+
+```bash
+pip install meross_iot==0.4.0.5
+```
+
+## Usage & Full Documentation
 Refer to the [documentation pages](https://albertogeniola.github.io/MerossIot/) for detailed usage instructions,
 or simply have a look at the `/examples` directory. 
 
@@ -65,6 +64,11 @@ async def main():
         # Turn it on channel 0
         # Note that channel argument is optional for MSS310 as they only have one channel
         dev = plugs[0]
+        
+        # The first time we play with a device, we must update its status
+        await dev.async_update()
+        
+        # We can now start playing with that
         print(f"Turning on {dev.name}...")
         await dev.async_turn_on(channel=0)
         print("Waiting a bit before turing it off")
@@ -93,7 +97,7 @@ The list of tested devices is the following:
 - MSS210 (Smart plug)
 - MSS310 (Smart plug with power consumption)
 - MSS310h (Smart plug with power consumption)
-- MSS425e (Smart strip)
+- MSS425E/MSS425F (Smart strip)
 - MSS530H (Wall-mount switches)
 - MSG100 (Garage opener)
 - MSH300 (Smart hub + valve thermostat)
@@ -113,6 +117,13 @@ Thanks to [DanoneKiD](https://github.com/DanoneKiD),
 
 Special thanks go to the github sponsors supporting this and other projects. Thanks a lot!
 
+## Unsupported device or feature?
+In case you own a Meross Device that is not currently supported by this library, you may ask the developers to 
+add specific support for that device. To do so, you will need to "sniff" low-level communication between your Meross
+App and the specific device. Such data can help the developers to add support for that device.
+
+Please [have a look at there](https://albertogeniola.github.io/MerossIot/advanced-topics.html#sniff-device-data) 
+to discover how to use the Meross Sniffing tool to do so.   
 
 ## Homeassistant integration
 Yeah, it happened. As soon as I started developing this library, I've discovered the HomeAssistant world.
@@ -164,14 +175,25 @@ Anyways, feel free to contribute via donations!
 </p>
 
 ## Changelog
+#### 0.4.0.5
+- Implemented MQTT rate-limiter
+- Updated documentation
+- Fixed error occurring with paho-mqtt > 1.5.0
+
+<details>
+    <summary>Older</summary>
+
+#### 0.4.0.3
+- Improved sniffing data masking
+- Added light.py update instruction
+- Added error logs in case of missing async_update() call first call
+#### 0.4.0.2
+- Re-Implemented Meross Sniffer utility
 #### 0.4.0.1
 - Fixed #117
 - Extended API error codes
 - Updated paho-mqtt dependency to v1.5.0 
 - Fixed errors caused in tests when running on windows system / Python 3.8
-
-<details>
-    <summary>Older</summary>
 
 #### 0.4.0.0
 Complete re-engineerization of the library.
