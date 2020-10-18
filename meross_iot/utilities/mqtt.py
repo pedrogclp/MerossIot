@@ -1,6 +1,9 @@
 import uuid as UUID
 from hashlib import md5
 
+# Every appliance sends data to /appliance/<uui>/publish topic.
+APPLIANCE_PUBLISH_TOPIC_PATH = '/appliance/+/publish'
+
 
 def build_device_request_topic(client_uuid: str) -> str:
     """

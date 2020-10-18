@@ -5,7 +5,7 @@ import random
 import ssl
 import string
 import sys
-from abc import ABC
+from abc import ABC, abstractmethod
 from time import time
 from asyncio import Future, AbstractEventLoop
 from asyncio import TimeoutError
@@ -28,7 +28,8 @@ from meross_iot.model.push.factory import parse_push_notification
 from meross_iot.model.push.generic import GenericPushNotification
 from meross_iot.model.push.unbind import UnbindPushNotification
 from meross_iot.utilities.mqtt import generate_mqtt_password, generate_client_and_app_id, build_client_response_topic, \
-    build_client_user_topic, verify_message_signature, device_uuid_from_push_notification, build_device_request_topic
+    build_client_user_topic, verify_message_signature, device_uuid_from_push_notification, build_device_request_topic, \
+    APPLIANCE_PUBLISH_TOPIC_PATH
 from datetime import timedelta
 from enum import Enum
 
@@ -190,6 +191,7 @@ class MerossManager(ABC):
         self._client_response_topic = build_client_response_topic(user_id=self._cloud_creds.user_id,
                                                                   app_id=self._app_id)
         self._user_topic = build_client_user_topic(user_id=self._cloud_creds.user_id)
+        self._topics = [(self._user_topic, 0), (self._client_response_topic, 0)]
 
         # Setup a rate limiter
         self._over_limit_delay = over_limit_delay_seconds
@@ -302,7 +304,7 @@ class MerossManager(ABC):
         _LOGGER.debug(f"Connected with result code {rc}")
         # Subscribe to the relevant topics
         _LOGGER.debug("Subscribing to topics...")
-        client.subscribe([(self._user_topic, 0), (self._client_response_topic, 0)])
+        client.subscribe(self._topics)
 
     def _on_disconnect(self, client, userdata, rc):
         # NOTE! This method is called by the paho-mqtt thread, thus any invocation to the
@@ -632,10 +634,22 @@ class MerossManager(ABC):
         }
         return data, messageId
 
+    @abstractmethod
+    async def async_device_discovery(self, update_subdevice_status: bool = True,
+                                     meross_device_uuid: str = None) -> None:
+        pass
+
 
 class LocalMerossManager(MerossManager):
     def __init__(self, creds: MerossCloudCreds, *args, **kwords):
         super().__init__(creds, *args, **kwords)
+        # We also need to subscribe to /appliance/+/publish topic so that we can discover new devices
+        # as soon as they publish any data on mqtt
+        self._topics.append((APPLIANCE_PUBLISH_TOPIC_PATH, 0))
+
+    async def async_device_discovery(self, update_subdevice_status: bool = True,
+                                     meross_device_uuid: str = None) -> None:
+        pass
 
 
 class RemoteMerossManager(MerossManager):
