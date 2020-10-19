@@ -1,8 +1,26 @@
 import uuid as UUID
+import re
 from hashlib import md5
 
+
 # Every appliance sends data to /appliance/<uui>/publish topic.
+from typing import Optional
+
 APPLIANCE_PUBLISH_TOPIC_PATH = '/appliance/+/publish'
+_APPLIANCE_PUBLISH_TOPIC_REGEX = re.compile('^/appliance/([a-z0-9]+)/publish$')
+
+
+def extract_device_uuid_from_topic(topic: str) -> Optional[str]:
+    """
+    Returns the appliance UUID extracted from the topic. In case there is no match, None is returned.
+    :param topic:
+    :return:
+    """
+    matches = _APPLIANCE_PUBLISH_TOPIC_REGEX.fullmatch(topic)
+    if matches is None:
+        return None
+    else:
+        return matches.group(1)
 
 
 def build_device_request_topic(client_uuid: str) -> str:

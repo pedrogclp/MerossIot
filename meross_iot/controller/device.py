@@ -6,7 +6,7 @@ import time
 from typing import List, Union, Optional, Iterable, Coroutine, Callable, Any, Awaitable
 
 from meross_iot.model.enums import OnlineStatus, Namespace
-from meross_iot.model.http.device import HttpDeviceInfo
+from meross_iot.model.http.device import DeviceInfo
 from datetime import datetime
 from meross_iot.model.plugin.hub import BatteryInfo
 
@@ -152,7 +152,7 @@ class BaseDevice(object):
         """
         return self._channels
 
-    async def update_from_http_state(self, hdevice: HttpDeviceInfo) -> BaseDevice:
+    async def update_from_http_state(self, hdevice: DeviceInfo) -> BaseDevice:
         # Careful with online  status: not all the devices might expose an online mixin.
         if hdevice.uuid != self.uuid:
             raise ValueError(f"Cannot update device ({self.uuid}) with HttpDeviceInfo for device id {hdevice.uuid}")

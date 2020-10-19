@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import json
 import logging
 import random
@@ -22,14 +23,15 @@ from meross_iot.http_api import MerossHttpClient
 from meross_iot.model.enums import Namespace, OnlineStatus
 from meross_iot.model.exception import CommandTimeoutError, CommandError, RateLimitExceeded
 from meross_iot.model.exception import UnconnectedError
-from meross_iot.model.http.device import HttpDeviceInfo
+from meross_iot.model.http.device import DeviceInfo
 from meross_iot.model.http.subdevice import HttpSubdeviceInfo
+from meross_iot.model.push.common import SystemInfo
 from meross_iot.model.push.factory import parse_push_notification
 from meross_iot.model.push.generic import GenericPushNotification
 from meross_iot.model.push.unbind import UnbindPushNotification
 from meross_iot.utilities.mqtt import generate_mqtt_password, generate_client_and_app_id, build_client_response_topic, \
     build_client_user_topic, verify_message_signature, device_uuid_from_push_notification, build_device_request_topic, \
-    APPLIANCE_PUBLISH_TOPIC_PATH
+    APPLIANCE_PUBLISH_TOPIC_PATH, extract_device_uuid_from_topic
 from datetime import timedelta
 from enum import Enum
 
@@ -386,9 +388,34 @@ class MerossManager(ABC):
 
         # Let's retrieve the destination topic, message method and source party:
         destination_topic = msg.topic
+        message_id = header.get('messageId')
         message_method = header.get('method')
         source_topic = header.get('from')
+        namespace = header.get('namespace')
+        payload = message.get('payload')
 
+        handled = self._dispatch_message(message_id=message_id,
+                                         destination_topic=destination_topic,
+                                         source_topic=source_topic,
+                                         message_method=message_method,
+                                         namespace=namespace,
+                                         payload=payload,
+                                         json_message=message)
+
+        if not handled:
+            _LOGGER.warning(f"The current implementation of this library does not handle messages received on topic "
+                            f"({destination_topic}) and when the message method is {message_method}. "
+                            "If you see this message many times, it means Meross has changed the way its protocol "
+                            "works. Contact the developer if that happens!")
+
+    def _dispatch_message(self,
+                          message_id: str,
+                          destination_topic: str,
+                          source_topic: str,
+                          message_method: str,
+                          namespace: str,
+                          payload: dict,
+                          json_message: dict):
         # Dispatch the message.
         # Check case 2: COMMAND_ACKS. In this case, we don't check the source topic address, as we trust it's
         # originated by a device on this network that we contacted previously.
@@ -398,23 +425,24 @@ class MerossManager(ABC):
 
             # If the message is a PUSHACK/GETACK/ERROR, check if there is any pending command waiting for it and, if so,
             # resolve its future
-            message_id = header.get('messageId')
             future = self._pending_messages_futures.get(message_id)
             if future is not None:
                 _LOGGER.debug("Found a pending command waiting for response message")
                 if message_method == 'ERROR':
-                    err = CommandError(error_payload=message.payload)
+                    err = CommandError(error_payload=payload)
                     self._loop.call_soon_threadsafe(_handle_future, future, None, err)
+                    return True
+
                 elif message_method in ('SETACK', 'GETACK'):
-                    self._loop.call_soon_threadsafe(_handle_future, future, message, None)  # future.set_exception
+                    self._loop.call_soon_threadsafe(_handle_future, future, json_message, None)  # future.set_exception
+                    return True
                 else:
                     _LOGGER.error(f"Unhandled message method {message_method}. Please report it to the developer."
-                                  f"raw_msg: {msg}")
+                                  f"raw_msg: {json.dumps(json_message)}")
+                    return False
         # Check case 3: PUSH notification.
         # Again, here we don't check the source topic, we trust that's legitimate.
         elif destination_topic == build_client_user_topic(self._cloud_creds.user_id) and message_method == 'PUSH':
-            namespace = header.get('namespace')
-            payload = message.get('payload')
             origin_device_uuid = device_uuid_from_push_notification(source_topic)
 
             parsed_push_notification = parse_push_notification(namespace=namespace,
@@ -422,14 +450,13 @@ class MerossManager(ABC):
                                                                originating_device_uuid=origin_device_uuid)
             if parsed_push_notification is None:
                 _LOGGER.error("Push notification parsing failed. That message won't be dispatched.")
+                return False
             else:
                 asyncio.run_coroutine_threadsafe(self._handle_and_dispatch_push_notification(parsed_push_notification),
                                                  loop=self._loop)
-        else:
-            _LOGGER.warning(f"The current implementation of this library does not handle messages received on topic "
-                            f"({destination_topic}) and when the message method is {message_method}. "
-                            "If you see this message many times, it means Meross has changed the way its protocol "
-                            "works. Contact the developer if that happens!")
+                return True
+
+        return False
 
     async def _async_dispatch_push_notification(self, push_notification: GenericPushNotification) -> bool:
         handled = False
@@ -548,7 +575,7 @@ class MerossManager(ABC):
                                                 timeout=timeout)
 
         # Build the mqtt message we will send to the broker
-        #message, message_id = self._build_mqtt_message(method, namespace, payload)
+        # message, message_id = self._build_mqtt_message(method, namespace, payload)
         data, message_id = self._build_mqtt_message(method, namespace, payload)
         strdata = json.dumps(data)
         message = strdata.encode("utf-8")
@@ -575,7 +602,8 @@ class MerossManager(ABC):
                                                                 timeout=timeout)
         return response.get('payload')
 
-    async def _async_send_and_wait_ack_mqtt(self, future: Future, target_device_uuid: str, message: dict, timeout: float):
+    async def _async_send_and_wait_ack_mqtt(self, future: Future, target_device_uuid: str, message: dict,
+                                            timeout: float):
         md = self._mqtt_client.publish(topic=build_device_request_topic(target_device_uuid), payload=message)
         try:
             return await asyncio.wait_for(future, timeout, loop=self._loop)
@@ -647,9 +675,68 @@ class LocalMerossManager(MerossManager):
         # as soon as they publish any data on mqtt
         self._topics.append((APPLIANCE_PUBLISH_TOPIC_PATH, 0))
 
+    def _dispatch_message(self,
+                          message_id: str,
+                          destination_topic: str,
+                          source_topic: str,
+                          message_method: str,
+                          namespace: str,
+                          payload: dict,
+                          json_message: dict):
+        """
+        NOTE! This method is called by the paho-mqtt thread, thus any invocation to the
+        asyncio platform must be scheduled via `self._loop.call_soon_threadsafe()` method.
+        """
+        # The local manager cannot rely on an HTTP api to list enrolled devices. For this reason, we need
+        # to sniff messages delivered to /appliance/uuid/publish. In this way, we can note any new device
+        # that is talking on mqtt and, later on, we can register it.
+        device_uuid = extract_device_uuid_from_topic(destination_topic)
+        known_device = self._device_registry.lookup_base_by_uuid(device_uuid=device_uuid)
+        if not known_device:
+            _LOGGER.info("Device %s is unknown to the MerossManager (probably a newly added device). "
+                         "The message will be ignored until the device gets enrolled.", device_uuid)
+            asyncio.run_coroutine_threadsafe(
+                coro=self.async_device_discovery(update_subdevice_status=True, meross_device_uuid=device_uuid),
+                loop=self._loop)
+
+        # Invoke super logic first
+        handled = super()._dispatch_message(message_id=message_id,
+                                            destination_topic=destination_topic,
+                                            source_topic=source_topic,
+                                            message_method=message_method,
+                                            namespace=namespace,
+                                            payload=payload,
+                                            json_message=json_message)
+        return handled
+
     async def async_device_discovery(self, update_subdevice_status: bool = True,
                                      meross_device_uuid: str = None) -> None:
-        pass
+        if meross_device_uuid is None:
+            raise ValueError("The MerossLocal manager does not support broadcast device discovery. "
+                             "Please specify a valid meross_device_uuid parameter to discover a device.")
+
+        # Retrieve device data
+        all = await self.async_execute_cmd(destination_device_uuid=meross_device_uuid,
+                                           method="GET",
+                                           namespace=Namespace.SYSTEM_ALL,
+                                           payload={})
+        device_info = SystemInfo.from_dict(all.get('all').get('system'))
+
+        # TODO: start from here
+        raise NotImplementedError("start from here")
+        # Retrieve device abilities
+        res_abilities = await self.async_execute_cmd(destination_device_uuid=meross_device_uuid,
+                                                     method="GET",
+                                                     namespace=Namespace.SYSTEM_ABILITY,
+                                                     payload={})
+        abilities = res_abilities.get('ability')
+        _LOGGER.debug("Device %s reported the following abilities: %s", meross_device_uuid, abilities)
+        # Build a full-featured device using the given ability set
+        # device = build_meross_device(http_device_info=device_info, device_abilities=abilities, manager=self)
+
+        # Enroll the device
+        # self._device_registry.enroll_device(device)
+        # return device
 
 
 class RemoteMerossManager(MerossManager):
@@ -747,7 +834,7 @@ class RemoteMerossManager(MerossManager):
         self._device_registry.enroll_device(subdevice)
         return subdevice
 
-    async def _async_enroll_new_http_dev(self, device_info: HttpDeviceInfo) -> Optional[BaseDevice]:
+    async def _async_enroll_new_http_dev(self, device_info: DeviceInfo) -> Optional[BaseDevice]:
         try:
             # Only get abilities if the device is online.
             if device_info.online_status != OnlineStatus.ONLINE:
@@ -765,7 +852,7 @@ class RemoteMerossManager(MerossManager):
             return None
 
         # Build a full-featured device using the given ability set
-        device = build_meross_device(http_device_info=device_info, device_abilities=abilities, manager=self)
+        device = build_meross_device(device_info=device_info, device_abilities=abilities, manager=self)
 
         # Enroll the device
         self._device_registry.enroll_device(device)

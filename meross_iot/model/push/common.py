@@ -1,3 +1,6 @@
+from typing import Union
+
+from meross_iot.model.enums import OnlineStatus
 from meross_iot.model.shared import BaseDictPayload
 
 
@@ -32,3 +35,26 @@ class TimeInfo(BaseDictPayload):
         self.timezone = timezone
         self.timestamp = timestamp
         self.time_rule = time_rule
+
+
+class OnlineInfo(BaseDictPayload):
+    def __init__(self, status: Union[str, int], *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if isinstance(status, str):
+            int_status = int(status)
+        elif isinstance(status, int):
+            int_status = status
+        else:
+            raise ValueError("Invalid online status")
+
+        self.status = OnlineStatus(int_status)
+
+
+class SystemInfo(BaseDictPayload):
+    def __init__(self, hardware: dict, firmware: dict, time: dict, online: dict, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.hardware = HardwareInfo.from_dict(hardware)
+        self.firmware = FirmwareInfo.from_dict(firmware)
+        self.time = TimeInfo.from_dict(time)
+        self.online = OnlineInfo.from_dict(online)
+

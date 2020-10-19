@@ -12,7 +12,7 @@ from meross_iot.controller.mixins.system import SystemAllMixin, SystemOnlineMixi
 from meross_iot.controller.mixins.toggle import ToggleXMixin, ToggleMixin
 from meross_iot.controller.subdevice import Mts100v3Valve, Ms100Sensor
 from meross_iot.model.enums import Namespace
-from meross_iot.model.http.device import HttpDeviceInfo
+from meross_iot.model.http.device import DeviceInfo
 from meross_iot.model.http.subdevice import HttpSubdeviceInfo
 
 _LOGGER = logging.getLogger(__name__)
@@ -122,31 +122,31 @@ def _build_cached_type(type_string: str, device_abilities: dict, base_class: typ
     return m
 
 
-def build_meross_device(http_device_info: HttpDeviceInfo, device_abilities: dict, manager) -> BaseDevice:
+def build_meross_device(device_info: DeviceInfo, device_abilities: dict, manager) -> BaseDevice:
     """
     Builds a managed meross device object given the specs reported by HTTP api and the abilities reported by the device
     itself.
-    :param http_device_info:
+    :param device_info:
     :param device_abilities:
     :param manager:
     :return:
     """
     # The current implementation of this library is based on the usage of pluggable Mixin classes on top of
     # a couple of base implementations.
-    _LOGGER.debug(f"Building managed device for {http_device_info.dev_name} ({http_device_info.uuid}). "
+    _LOGGER.debug(f"Building managed device for {device_info.dev_name} ({device_info.uuid}). "
                   f"Reported abilities: {device_abilities}")
 
     # Check if we already have cached type for that device kind.
-    cached_type = _lookup_cached_type(http_device_info.device_type,
-                                      http_device_info.hdware_version,
-                                      http_device_info.fmware_version)
+    cached_type = _lookup_cached_type(device_info.device_type,
+                                      device_info.hdware_version,
+                                      device_info.fmware_version)
     if cached_type is None:
-        _LOGGER.debug(f"Could not find any cached type for {http_device_info.device_type},"
-                      f"{http_device_info.hdware_version},"
-                      f"{http_device_info.fmware_version}. It will be generated.")
-        device_type_name = _caclulate_device_type_name(http_device_info.device_type,
-                                                       http_device_info.hdware_version,
-                                                       http_device_info.fmware_version)
+        _LOGGER.debug(f"Could not find any cached type for {device_info.device_type},"
+                      f"{device_info.hdware_version},"
+                      f"{device_info.fmware_version}. It will be generated.")
+        device_type_name = _caclulate_device_type_name(device_info.device_type,
+                                                       device_info.hdware_version,
+                                                       device_info.fmware_version)
 
         # Let's now pick the base class where to attach all the mixin.
         # We basically offer two possible base implementations:
@@ -158,8 +158,8 @@ def build_meross_device(http_device_info: HttpDeviceInfo, device_abilities: dict
         discriminating_ability = Namespace.SYSTEM_DIGEST_HUB.value
         base_class = BaseDevice
         if discriminating_ability in device_abilities:
-            _LOGGER.warning(f"Device {http_device_info.dev_name} ({http_device_info.device_type}, "
-                            f"uuid {http_device_info.uuid}) reported ability {discriminating_ability}. "
+            _LOGGER.warning(f"Device {device_info.dev_name} ({device_info.device_type}, "
+                            f"uuid {device_info.uuid}) reported ability {discriminating_ability}. "
                             f"Assuming this is a full-featured HUB.")
             base_class = HubDevice
 
@@ -168,7 +168,7 @@ def build_meross_device(http_device_info: HttpDeviceInfo, device_abilities: dict
                                          base_class=base_class)
         _dynamic_types[device_type_name] = cached_type
 
-    component = cached_type(device_uuid=http_device_info.uuid, manager=manager, **http_device_info.to_dict())
+    component = cached_type(device_uuid=device_info.uuid, manager=manager, **device_info.to_dict())
     return component
 
 

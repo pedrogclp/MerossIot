@@ -8,7 +8,7 @@ from meross_iot.model.shared import BaseDictPayload
 _LOGGER = logging.getLogger(__name__)
 
 
-class HttpDeviceInfo(BaseDictPayload):
+class DeviceInfo(BaseDictPayload):
     def __init__(self,
                  uuid: str,
                  online_status: Union[int, OnlineStatus],
