@@ -17,7 +17,7 @@ import aiohttp
 import paho.mqtt.client as mqtt
 from meross_iot.model.credentials import MerossCloudCreds
 
-from meross_iot.controller.device import BaseDevice, HubDevice, GenericSubDevice
+from meross_iot.controller.device import BaseDevice, HubDevice, GenericSubDevice, ChannelInfo
 from meross_iot.device_factory import build_meross_device, build_meross_subdevice
 from meross_iot.http_api import MerossHttpClient
 from meross_iot.model.enums import Namespace, OnlineStatus
@@ -712,7 +712,7 @@ class LocalMerossManager(MerossManager):
     async def async_device_discovery(self, update_subdevice_status: bool = True,
                                      meross_device_uuid: str = None) -> None:
         if meross_device_uuid is None:
-            raise ValueError("The MerossLocal manager does not support broadcast device discovery. "
+            raise ValueError("The MerossLocal manager does not support broadcast device discovery (yet). "
                              "Please specify a valid meross_device_uuid parameter to discover a device.")
 
         # Retrieve device data
@@ -720,10 +720,14 @@ class LocalMerossManager(MerossManager):
                                            method="GET",
                                            namespace=Namespace.SYSTEM_ALL,
                                            payload={})
-        device_info = SystemInfo.from_dict(all.get('all').get('system'))
+        # FIXME:
+        #  Device channels are provided by HTTP api, which cannot be used for local-only approach.
+        #  To work this around, we try to derive such info from the response of channel-aware commands,
+        #  such as toggle/togglex (if they are supported). This is really ugly, but for now, it's the only way...
+        channels = self._derive_channels_from_digest(all.get('all').get('digest'))
 
-        # TODO: start from here
-        raise NotImplementedError("start from here")
+        device_system_info = SystemInfo.from_dict(all.get('all').get('system'))
+
         # Retrieve device abilities
         res_abilities = await self.async_execute_cmd(destination_device_uuid=meross_device_uuid,
                                                      method="GET",
@@ -731,12 +735,55 @@ class LocalMerossManager(MerossManager):
                                                      payload={})
         abilities = res_abilities.get('ability')
         _LOGGER.debug("Device %s reported the following abilities: %s", meross_device_uuid, abilities)
+
+        # The device name is provided by the HTTP api and we cannot use it. Thus, let's build it as
+        #  a combination of device type followed by the last 6 digits of its mac address.
+        device_name = f"{device_system_info.hardware.type}-{device_system_info.hardware.mac_address[-8:].replace(':','')}"
+        _LOGGER.info("No device name specified for device %s. Assigning %s to it",
+                     device_system_info.hardware.uuid, device_name)
+
+        info = DeviceInfo(uuid=device_system_info.hardware.uuid,
+                          online_status=device_system_info.online.status,
+                          dev_name=device_name,
+                          dev_icon_id=None,     # This is provided by HTTP API. We don't have that!
+                          bind_time=None,       # This is provided by HTTP API. We don't have that!
+                          device_type=device_system_info.hardware.type,
+                          sub_type=device_system_info.hardware.sub_type,
+                          channels=[],          # TODO: This is provided by HTTP API. We don't have that!
+                          region=None,          # This is provided by HTTP API. We don't have that!
+                          fmware_version=device_system_info.firmware.version,
+                          hdware_version=device_system_info.hardware.version,
+                          user_dev_icon=None,   # This is provided by HTTP API. We don't have that!
+                          icon_type=None,       # This is provided by HTTP API. We don't have that!
+                          skill_number=None,    # This is provided by HTTP API. We don't have that!
+                          domain=device_system_info.firmware.server,
+                          reserved_domain=device_system_info.firmware.server
+                          )
+
         # Build a full-featured device using the given ability set
-        # device = build_meross_device(http_device_info=device_info, device_abilities=abilities, manager=self)
+        device = build_meross_device(device_info=info, device_abilities=abilities, manager=self)
+
+        _LOGGER.debug("Built wrapper for device type %s", device.type)
 
         # Enroll the device
-        # self._device_registry.enroll_device(device)
-        # return device
+        self._device_registry.enroll_device(device)
+
+    def _derive_channels_from_digest(self, digest: dict) -> List[ChannelInfo]:
+        channels = []
+        toggleinfo = digest.get('toggle')
+        togglexinfo = digest.get('togglex')
+        if toggleinfo is not None:
+            # TODO: make sure we can determine multiple channels also with the toggle info.
+            raise NotImplementedError()
+        elif togglexinfo is not None:
+            for c in togglexinfo:
+                channels.append(
+                    ChannelInfo(index=c['channel'],
+                                name=c.get('name'),
+                                is_master_channel=c['channel'] == 0))  # Assume first is the master channel
+        else:
+            _LOGGER.warning("Failed to determine the channels available on this device.")
+        return channels
 
 
 class RemoteMerossManager(MerossManager):

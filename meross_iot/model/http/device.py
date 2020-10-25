@@ -1,6 +1,6 @@
 import logging
 from datetime import datetime
-from typing import Union, List
+from typing import Union, List, Optional
 
 from meross_iot.model.enums import OnlineStatus
 from meross_iot.model.shared import BaseDictPayload
@@ -13,17 +13,17 @@ class DeviceInfo(BaseDictPayload):
                  uuid: str,
                  online_status: Union[int, OnlineStatus],
                  dev_name: str,
-                 dev_icon_id: str,
-                 bind_time: Union[int, datetime],
+                 dev_icon_id: Optional[str],
+                 bind_time: Optional[Union[int, datetime]],
                  device_type: str,
                  sub_type: str,
                  channels: List[dict],
-                 region: str,
+                 region: Optional[str],
                  fmware_version: str,
                  hdware_version: str,
-                 user_dev_icon: str,
-                 icon_type: int,
-                 skill_number: str,
+                 user_dev_icon: Optional[str],
+                 icon_type: Optional[int],
+                 skill_number: Optional[str],
                  domain: str,
                  reserved_domain: str,
                  *args, **kwargs):
@@ -35,17 +35,18 @@ class DeviceInfo(BaseDictPayload):
         elif isinstance(online_status, OnlineStatus):
             self.online_status = online_status
         else:
-            _LOGGER.warning(f"Provided online_status is not int neither OnlineStatus. It will be ignored.")
+            _LOGGER.warning("Provided online_status is not int neither OnlineStatus. It will be ignored.")
             self.online_status = None
 
-        self.dev_name = dev_name
+        self.dev_name = uuid
+
         self.dev_icon_id = dev_icon_id
         if isinstance(bind_time, int):
             self.bind_time = datetime.utcfromtimestamp(bind_time)
         elif isinstance(bind_time, datetime):
             self.bind_time = bind_time
         else:
-            _LOGGER.warning(f"Provided bind_time is not int neither datetime. It will be ignored.")
+            _LOGGER.warning("Provided bind_time is not int neither datetime. It will be ignored.")
             self.bind_time = None
 
         self.device_type = device_type

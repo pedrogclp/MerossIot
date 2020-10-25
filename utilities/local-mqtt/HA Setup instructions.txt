@@ -1,0 +1,17 @@
+Homeassistant configuration
+- Install mosquitto broker.
+- Configure it as follows
+
+logins: []
+anonymous: true
+customize:
+  active: false
+  folder: mosquitto
+certfile: /meross/meross_server.crt
+keyfile: /meross/meross_server.key
+require_certificate: false
+cafile: /meross/meross_ca.crt
+
+- Create a directory in /ssl/meross on HASSIO (use SSH terminal or similar)
+- Move meross_ca.crt, meross_server.crt and meross_server.key in /ssl/meross directory of hassio:
+
