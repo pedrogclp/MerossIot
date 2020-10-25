@@ -419,8 +419,7 @@ class MerossManager(ABC):
         # Dispatch the message.
         # Check case 2: COMMAND_ACKS. In this case, we don't check the source topic address, as we trust it's
         # originated by a device on this network that we contacted previously.
-        if destination_topic == build_client_response_topic(self._cloud_creds.user_id, self._app_id) and \
-                message_method in ['SETACK', 'GETACK', 'ERROR']:
+        if destination_topic == self._client_response_topic and message_method in ['SETACK', 'GETACK', 'ERROR']:
             _LOGGER.debug("This message is an ACK to a command this client has send.")
 
             # If the message is a PUSHACK/GETACK/ERROR, check if there is any pending command waiting for it and, if so,
@@ -442,7 +441,7 @@ class MerossManager(ABC):
                     return False
         # Check case 3: PUSH notification.
         # Again, here we don't check the source topic, we trust that's legitimate.
-        elif destination_topic == build_client_user_topic(self._cloud_creds.user_id) and message_method == 'PUSH':
+        elif destination_topic == self._user_topic and message_method == 'PUSH':
             origin_device_uuid = device_uuid_from_push_notification(source_topic)
 
             parsed_push_notification = parse_push_notification(namespace=namespace,
@@ -699,14 +698,25 @@ class LocalMerossManager(MerossManager):
                 coro=self.async_device_discovery(update_subdevice_status=True, meross_device_uuid=device_uuid),
                 loop=self._loop)
 
-        # Invoke super logic first
-        handled = super()._dispatch_message(message_id=message_id,
-                                            destination_topic=destination_topic,
-                                            source_topic=source_topic,
-                                            message_method=message_method,
-                                            namespace=namespace,
-                                            payload=payload,
-                                            json_message=json_message)
+        # In case this message is a PUSH-NOTIFICATION from a Meross Device, let's simulate the current Meross
+        #  MQTT behavior, which "forwards" the message to the user's thread.
+        if message_method == "PUSH":
+            handled = super()._dispatch_message(message_id=message_id,
+                                                destination_topic=self._user_topic,
+                                                source_topic=source_topic,
+                                                message_method=message_method,
+                                                namespace=namespace,
+                                                payload=payload,
+                                                json_message=json_message)
+        else:
+            # Otherwise, handle the message as usual
+            handled = super()._dispatch_message(message_id=message_id,
+                                                destination_topic=destination_topic,
+                                                source_topic=source_topic,
+                                                message_method=message_method,
+                                                namespace=namespace,
+                                                payload=payload,
+                                                json_message=json_message)
         return handled
 
     async def async_device_discovery(self, update_subdevice_status: bool = True,
@@ -738,24 +748,24 @@ class LocalMerossManager(MerossManager):
 
         # The device name is provided by the HTTP api and we cannot use it. Thus, let's build it as
         #  a combination of device type followed by the last 6 digits of its mac address.
-        device_name = f"{device_system_info.hardware.type}-{device_system_info.hardware.mac_address[-8:].replace(':','')}"
+        device_name = f"{device_system_info.hardware.type}-{device_system_info.hardware.mac_address[-8:].replace(':', '')}"
         _LOGGER.info("No device name specified for device %s. Assigning %s to it",
                      device_system_info.hardware.uuid, device_name)
 
         info = DeviceInfo(uuid=device_system_info.hardware.uuid,
                           online_status=device_system_info.online.status,
                           dev_name=device_name,
-                          dev_icon_id=None,     # This is provided by HTTP API. We don't have that!
-                          bind_time=None,       # This is provided by HTTP API. We don't have that!
+                          dev_icon_id=None,  # This is provided by HTTP API. We don't have that!
+                          bind_time=None,  # This is provided by HTTP API. We don't have that!
                           device_type=device_system_info.hardware.type,
                           sub_type=device_system_info.hardware.sub_type,
-                          channels=[],          # TODO: This is provided by HTTP API. We don't have that!
-                          region=None,          # This is provided by HTTP API. We don't have that!
+                          channels=[],  # TODO: This is provided by HTTP API. We don't have that!
+                          region=None,  # This is provided by HTTP API. We don't have that!
                           fmware_version=device_system_info.firmware.version,
                           hdware_version=device_system_info.hardware.version,
-                          user_dev_icon=None,   # This is provided by HTTP API. We don't have that!
-                          icon_type=None,       # This is provided by HTTP API. We don't have that!
-                          skill_number=None,    # This is provided by HTTP API. We don't have that!
+                          user_dev_icon=None,  # This is provided by HTTP API. We don't have that!
+                          icon_type=None,  # This is provided by HTTP API. We don't have that!
+                          skill_number=None,  # This is provided by HTTP API. We don't have that!
                           domain=device_system_info.firmware.server,
                           reserved_domain=device_system_info.firmware.server
                           )
