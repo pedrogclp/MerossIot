@@ -668,7 +668,15 @@ class MerossManager(ABC):
 
 
 class LocalMerossManager(MerossManager):
-    def __init__(self, creds: MerossCloudCreds, *args, **kwords):
+    def __init__(self, creds: MerossCloudCreds, known_devices: dict = None, *args, **kwords):
+        """
+        Initializes the manager
+        :param creds: credentials to access the local mqtt broker and to sign MQTT messages
+        :param known_devices: dictionary uuid->assigned_name, used to assign user's preferred name to already known devices
+        :param args:
+        :param kwords:
+        """
+        self._known_devices = known_devices if known_devices is not None else dict()
         super().__init__(creds, *args, **kwords)
         # We also need to subscribe to /appliance/+/publish topic so that we can discover new devices
         # as soon as they publish any data on mqtt
@@ -690,13 +698,14 @@ class LocalMerossManager(MerossManager):
         # to sniff messages delivered to /appliance/uuid/publish. In this way, we can note any new device
         # that is talking on mqtt and, later on, we can register it.
         device_uuid = extract_device_uuid_from_topic(destination_topic)
-        known_device = self._device_registry.lookup_base_by_uuid(device_uuid=device_uuid)
-        if not known_device:
-            _LOGGER.info("Device %s is unknown to the MerossManager (probably a newly added device). "
-                         "The message will be ignored until the device gets enrolled.", device_uuid)
-            asyncio.run_coroutine_threadsafe(
-                coro=self.async_device_discovery(update_subdevice_status=True, meross_device_uuid=device_uuid),
-                loop=self._loop)
+        if device_uuid is not None:
+            registered_devices = self._device_registry.lookup_base_by_uuid(device_uuid=device_uuid)
+            if registered_devices is None:
+                _LOGGER.info("Device %s is unknown to the MerossManager (probably a newly added device). "
+                             "The message will be ignored until the device gets enrolled.", device_uuid)
+                asyncio.run_coroutine_threadsafe(
+                    coro=self.async_device_discovery(update_subdevice_status=True, meross_device_uuid=device_uuid),
+                    loop=self._loop)
 
         # In case this message is a PUSH-NOTIFICATION from a Meross Device, let's simulate the current Meross
         #  MQTT behavior, which "forwards" the message to the user's thread.
@@ -721,9 +730,22 @@ class LocalMerossManager(MerossManager):
 
     async def async_device_discovery(self, update_subdevice_status: bool = True,
                                      meross_device_uuid: str = None) -> None:
+        # When invoked without target device UUID, discover all the devices that have been added
+        # at initialization time
         if meross_device_uuid is None:
-            raise ValueError("The MerossLocal manager does not support broadcast device discovery (yet). "
-                             "Please specify a valid meross_device_uuid parameter to discover a device.")
+            for uuid in self._known_devices.keys():
+                await self._async_single_device_discovery(meross_device_uuid=uuid)
+        # Otherwise invoke singularly on targeted device
+        else:
+            await self._async_single_device_discovery(meross_device_uuid=meross_device_uuid)
+
+    async def _async_single_device_discovery(self, meross_device_uuid: str):
+        # Check if the device is already known. Only trigger the targeted discovery if it's unknown
+        d = self._device_registry.lookup_base_by_uuid(meross_device_uuid)
+        if d is not None:
+            _LOGGER.warning("Device %s was already present into the device registry; it won't be discovered.",
+                            meross_device_uuid)
+            return
 
         # Retrieve device data
         all = await self.async_execute_cmd(destination_device_uuid=meross_device_uuid,
@@ -746,11 +768,14 @@ class LocalMerossManager(MerossManager):
         abilities = res_abilities.get('ability')
         _LOGGER.debug("Device %s reported the following abilities: %s", meross_device_uuid, abilities)
 
-        # The device name is provided by the HTTP api and we cannot use it. Thus, let's build it as
-        #  a combination of device type followed by the last 6 digits of its mac address.
-        device_name = f"{device_system_info.hardware.type}-{device_system_info.hardware.mac_address[-8:].replace(':', '')}"
-        _LOGGER.info("No device name specified for device %s. Assigning %s to it",
-                     device_system_info.hardware.uuid, device_name)
+        # The device name is provided by the HTTP api and we cannot use it.
+        # When possible, assign the name by looking into the dictionary provided at initialization time.
+        # If not known, use a combination of device type followed by the last 6 digits of its mac address.
+        device_name = self._known_devices.get(meross_device_uuid)
+        if device_name is None:
+            device_name = f"{device_system_info.hardware.type}-{device_system_info.hardware.mac_address[-8:].replace(':', '')} "
+            _LOGGER.info("No device name specified for device %s. Assigning %s to it",
+                         device_system_info.hardware.uuid, device_name)
 
         info = DeviceInfo(uuid=device_system_info.hardware.uuid,
                           online_status=device_system_info.online.status,
@@ -794,7 +819,6 @@ class LocalMerossManager(MerossManager):
         else:
             _LOGGER.warning("Failed to determine the channels available on this device.")
         return channels
-
 
 class RemoteMerossManager(MerossManager):
 

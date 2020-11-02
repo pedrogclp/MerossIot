@@ -38,7 +38,7 @@ class DeviceInfo(BaseDictPayload):
             _LOGGER.warning("Provided online_status is not int neither OnlineStatus. It will be ignored.")
             self.online_status = None
 
-        self.dev_name = uuid
+        self.dev_name = dev_name
 
         self.dev_icon_id = dev_icon_id
         if isinstance(bind_time, int):

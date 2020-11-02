@@ -181,7 +181,7 @@ class BaseDevice(object):
         if namespace == Namespace.SYSTEM_ALL:
             self._local_ip = data.get('all', {}).get('system', {}).get('firmware', {}).get('innerIp')
 
-        await self._fire_push_notification_event(namespace, data)
+        await self._fire_push_notification_event(namespace, data, device_internal_id=self.internal_id)
         await self._fire_push_notification_event(namespace=namespace, data=data, device_internal_id=self.internal_id)
         self._last_full_update_ts = time.time() * 1000
 
