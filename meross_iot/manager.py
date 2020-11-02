@@ -138,7 +138,7 @@ class RateLimitChecker(object):
 
 class MerossManager(ABC):
     """
-    This class implements a full-features Meross Client, which provides device discovery and registry.
+    (Abstract) Base class that handles Meross MQTT communication, also providing discovery and registry services.
     *Note*: The manager must be initialized before invoking any of its discovery/registry methods. As soon as
     you create a manager, you shoul call :meth:`async_init`!
     """
@@ -157,6 +157,22 @@ class MerossManager(ABC):
                  insecure_ssl: bool = False,
                  *args,
                  **kwords) -> None:
+        """
+        Constructor
+        :param creds: credentials used to authenticate against the MQTT broker and Meross devices
+        :param auto_reconnect: when true, the manager takes care of auto-reconnection upon connection drops
+        :param domain: hostname of the mqtt broker to which the manager should connect to
+        :param port: port of the mqtt broker to which the manager should connect to
+        :param ca_cert: path to the CA certificate chain to be trusted when connecting to MQTT broker
+        :param loop: asyncio loop object
+        :param over_limit_delay_seconds: number of seconds to "wait" before issuing new request when API limit is reached
+        :param over_limit_threshold_percentage: percentage of the limit above which API calls are dropped rather than delayed
+        :param burst_requests_per_second_limit: number of requests allowed within the time window
+        :param requests_per_second_limit: length of the burst time-window in seconds
+        :param insecure_ssl: when True, the mqtt client will accept insecure SSL certificates
+        :param args:
+        :param kwords:
+        """
 
         # Store local attributes
         self.__initialized = False
@@ -819,6 +835,7 @@ class LocalMerossManager(MerossManager):
         else:
             _LOGGER.warning("Failed to determine the channels available on this device.")
         return channels
+
 
 class RemoteMerossManager(MerossManager):
 
