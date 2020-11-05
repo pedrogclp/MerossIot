@@ -25,7 +25,7 @@ Due to the popularity of the library, I've decided to list it publicly on the Pi
 So, the installation is as simple as typing the following command:
 
 ```bash
-pip install meross_iot==0.4.0.6
+pip install meross_iot==0.4.0.7
 ```
 
 ## Usage & Full Documentation
@@ -180,7 +180,7 @@ Anyways, feel free to contribute via donations!
 
 <details>
     <summary>Older</summary>
-
+    
 #### 0.4.0.5
 - Implemented MQTT rate-limiter
 - Updated documentation

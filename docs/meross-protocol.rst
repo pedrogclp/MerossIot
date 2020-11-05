@@ -121,12 +121,12 @@ MQTT broker where the device is connecting to.
 
 
 Meross MQTT architecture
----------------------
+------------------------
 
 Most of the communication between the Meross App and the devices happens via a MQTT broker that Meross hosts (at the time of writing) on AWS cloud.
 By inspecting the network traffic among the Meross App, the MQTT broker and the Meross devices, we identify the following **topics**.
 
-.. image:: static/img/mqtt-subscriptions.png
+.. image:: images/mqtt-subscriptions.png
    :width: 800
    :alt: Meross MQTT topics
 
@@ -150,13 +150,13 @@ From the image above, we can discriminate 4 different topics:
 Flow: App commands
 ------------------
 
-.. image:: static/img/mqtt-app-command-flow.png
+.. image:: images/mqtt-app-command-flow.png
    :width: 800
    :alt: App command flow
 
 Flow: Push notifications
 ------------------------
 
-.. image:: static/img/mqtt-device-event-flow.png
+.. image:: images/mqtt-device-event-flow.png
    :width: 800
    :alt: Device event flow

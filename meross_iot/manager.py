@@ -14,6 +14,7 @@ from hashlib import md5
 from typing import Optional, List, TypeVar, Iterable, Callable, Awaitable, Tuple
 
 import aiohttp
+from typing import Optional, List, TypeVar, Iterable, Callable, Awaitable, Tuple, Dict
 import paho.mqtt.client as mqtt
 from meross_iot.model.credentials import MerossCloudCreds
 
@@ -37,6 +38,7 @@ from enum import Enum
 
 logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.INFO, stream=sys.stdout)
 _LOGGER = logging.getLogger(__name__)
+_LIMITER = logging.getLogger("meross_iot.manager.apilimiter")
 
 T = TypeVar('T', bound=BaseDevice)  # Declare type variable
 
@@ -80,7 +82,44 @@ class TokenBucketRateLimiter(object):
         self._limit_hits_in_window = 0
 
     @property
+    def current_over_limit_hits(self) -> int:
+        """
+        How many calls have been performed, within the time window, above the configured limit.
+        Those calls were possibly delayed, aborted.
+        :return:
+        """
+        self._add_tokens()
+        return self._limit_hits_in_window
+
+    @property
     def over_limit_percentace(self):
+        """
+        Represents the percentage of the API calls over the configured limit, with respect to the maximum burst size.
+        If the burst size is 100, and in the current time window there were 150 api calls, then 50 o f them are over
+        the limit. This property will then return (50 / 100) * 100 -> 50%.
+        :return:
+        """
+        self._add_tokens()
+        return (self._limit_hits_in_window / self._max_burst) * 100
+
+    @property
+    def current_window_hitrate(self) -> int:
+        """
+        Number of API cassl performed in the current time-window.
+        :return:
+        """
+        self._add_tokens()
+        return self._max_burst - self._remaining_tokens
+
+    @property
+    def current_window_capacity(self):
+        """
+        Percentage of API calls performed in the current time-window with respect to the burst limit.
+        For instance, if 90 api calls have been performed over a burst limit of 100, this method returns 90
+        (i.e. 90% of the limit capacity reached)
+        :return:
+        """
+        self._add_tokens()
         return (self._limit_hits_in_window / self._max_burst) * 100
 
     def check_limit_reached(self) -> bool:
@@ -108,7 +147,8 @@ class RateLimitChecker(object):
                  global_tokens_per_interval=2,
                  device_burst_rate=2,
                  device_time_window=timedelta(seconds=1),
-                 device_tokens_per_interval=1):
+                 device_tokens_per_interval=1,
+                 enable_stats=True):
         # Global limiter configuration
         self._global_limiter = TokenBucketRateLimiter(window_interval=global_time_window,
                                                       tokens_per_interval=global_tokens_per_interval,
@@ -118,6 +158,14 @@ class RateLimitChecker(object):
         self._device_burst_rate = device_burst_rate
         self._device_time_window = device_time_window
         self._device_tokens_per_interval = device_tokens_per_interval
+
+    @property
+    def global_rate_limiter(self) -> TokenBucketRateLimiter:
+        return self._global_limiter
+
+    @property
+    def device_limiters(self) -> Dict[str, TokenBucketRateLimiter]:
+        return self._devices_limiters
 
     def check_limits(self, device_uuid) -> Tuple[RateLimitResult, float]:
         # Check the device limit first
@@ -151,7 +199,7 @@ class MerossManager(ABC):
                  ca_cert: Optional[str] = None,
                  loop: Optional[AbstractEventLoop] = None,
                  over_limit_delay_seconds: int = 1,
-                 over_limit_threshold_percentage: float = 1000,
+                 over_limit_threshold_percentage: float = 400,
                  burst_requests_per_second_limit: int = 4,
                  requests_per_second_limit: int = 1,
                  insecure_ssl: bool = False,
@@ -220,6 +268,19 @@ class MerossManager(ABC):
             global_tokens_per_interval=requests_per_second_limit,
             device_tokens_per_interval=requests_per_second_limit
         )
+        _LOGGER.info("Applying rate-limit checker config: \n "
+                     "- Global Max Burst Rate: %d" 
+                     "- Per-Device Max Burst Rate: %d" 
+                     "- Global Burst Rate: %d"
+                     "- Per-Device Burst Rate: %d",
+                     burst_requests_per_second_limit,
+                     burst_requests_per_second_limit,
+                     requests_per_second_limit,
+                     requests_per_second_limit)
+
+    @property
+    def limiter(self) -> RateLimitChecker:
+        return self._limiter
 
     def register_push_notification_handler_coroutine(self, coro: Callable[
         [GenericPushNotification, List[BaseDevice]], Awaitable]) -> None:
@@ -573,6 +634,11 @@ class MerossManager(ABC):
 
         # Check API rate limits.
         limit_result, overlimit_percentage = self._limiter.check_limits(device_uuid=destination_device_uuid)
+        _LIMITER.debug("Number of API request within the last time-window: %s\n"
+                       "Global over limit percentage: %f %%",
+                       self._limiter.global_rate_limiter.current_window_hitrate,
+                       self._limiter.global_rate_limiter.over_limit_percentace)
+
         if limit_result != RateLimitResult.NotLimited:
             _LOGGER.debug(f"Current over-limit: {overlimit_percentage} %")
             # If the over-limit rate is too high, just drop the call.
@@ -583,7 +649,7 @@ class MerossManager(ABC):
 
             # In case the limit is hit but the the overlimit is sustainable, do not raise an exception, just
             # buy some time
-            _LOGGER.debug(f"Rate limit reached: api call will be delayed by {self._over_limit_delay} seconds")
+            _LOGGER.warning(f"Rate limit reached: api call will be delayed by {self._over_limit_delay} seconds")
             await asyncio.sleep(delay=self._over_limit_delay, loop=self._loop)
             return await self.async_execute_cmd(destination_device_uuid=destination_device_uuid,
                                                 method=method, namespace=namespace, payload=payload,
@@ -624,7 +690,7 @@ class MerossManager(ABC):
             return await asyncio.wait_for(future, timeout, loop=self._loop)
         except TimeoutError as e:
             _LOGGER.error(f"Timeout occurred while waiting a response for message {message} sent to device uuid "
-                          f"{target_device_uuid}. Timeout was: {timeout} seconds")
+                          f"{target_device_uuid}. Timeout was: {timeout} seconds.")
             raise CommandTimeoutError()
 
     async def _notify_connection_drop(self):
