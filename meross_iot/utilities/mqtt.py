@@ -1,8 +1,6 @@
-import uuid as UUID
 import re
+import uuid as UUID
 from hashlib import md5
-
-
 # Every appliance sends data to /appliance/<uui>/publish topic.
 from typing import Optional
 

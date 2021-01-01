@@ -17,9 +17,8 @@ from meross_iot.controller.mixins.spray import SprayMixin
 from meross_iot.controller.mixins.system import SystemAllMixin, SystemOnlineMixin
 from meross_iot.controller.mixins.toggle import ToggleXMixin, ToggleMixin
 from meross_iot.model.enums import Namespace
-from meross_iot.model.http.device import DeviceInfo
 from meross_iot.model.exception import UnknownDeviceType
-from meross_iot.model.http.device import HttpDeviceInfo
+from meross_iot.model.http.device import DeviceInfo
 from meross_iot.model.http.subdevice import HttpSubdeviceInfo
 
 _LOGGER = logging.getLogger(__name__)
@@ -148,7 +147,7 @@ def _build_cached_type(type_string: str, device_abilities: dict, base_class: typ
     return m
 
 
-def build_meross_device(device_info: DeviceInfo, device_abilities: dict, manager) -> BaseDevice:
+def build_meross_device_from_abilities(device_info: DeviceInfo, device_abilities: dict, manager) -> BaseDevice:
     """
     Builds a managed meross device object given the specs reported by HTTP api and the abilities reported by the device
     itself.
@@ -198,7 +197,7 @@ def build_meross_device(device_info: DeviceInfo, device_abilities: dict, manager
     return component
 
 
-def build_meross_device_from_known_types(http_device_info: HttpDeviceInfo,
+def build_meross_device_from_known_types(http_device_info: DeviceInfo,
                                         manager) -> BaseDevice:
     """
     Builds a managed meross device object by guess its relative class based on the device type string.

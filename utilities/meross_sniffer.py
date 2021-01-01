@@ -10,12 +10,13 @@ from hashlib import md5
 from os import path, environ
 from threading import Event
 from zipfile import ZipFile
+
 import paho.mqtt.client as mqtt
+
 from meross_iot.http_api import MerossHttpClient
 from meross_iot.manager import MerossManager
 from meross_iot.model.enums import Namespace, OnlineStatus
 from meross_iot.utilities.mqtt import build_device_request_topic, build_client_response_topic, build_client_user_topic
-
 
 SNIFF_LOG_FILE = 'sniff.log'
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')

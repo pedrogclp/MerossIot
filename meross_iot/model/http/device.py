@@ -1,11 +1,10 @@
+import json
 import logging
 from datetime import datetime
 from typing import Union, List, Optional
 
 from meross_iot.model.enums import OnlineStatus
 from meross_iot.model.shared import BaseDictPayload
-import json
-
 
 _LOGGER = logging.getLogger(__name__)
 

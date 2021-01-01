@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import logging
+import os
 import random
 import string
 import time
@@ -19,8 +20,6 @@ from meross_iot.model.http.device import DeviceInfo
 from meross_iot.model.http.exception import TooManyTokensException, TokenExpiredException, AuthenticatedPostException, \
     HttpApiError, BadLoginException
 from meross_iot.model.http.subdevice import HttpSubdeviceInfo
-import os
-
 
 _LOGGER = logging.getLogger(__name__)
 

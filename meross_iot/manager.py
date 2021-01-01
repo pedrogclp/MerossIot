@@ -5,27 +5,19 @@ import random
 import ssl
 import string
 import sys
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from asyncio import Future, AbstractEventLoop
 from asyncio import TimeoutError
-from datetime import timedelta
-from enum import Enum
 from hashlib import md5
-from time import time
-from typing import Optional, List, TypeVar, Iterable, Callable, Awaitable, Tuple
-
 from time import time
 from typing import Optional, List, TypeVar, Iterable, Callable, Awaitable, Tuple, Dict
 
 import aiohttp
 import paho.mqtt.client as mqtt
 
-from meross_iot.controller.device import BaseDevice, HubDevice, GenericSubDevice
-from meross_iot.device_factory import build_meross_device_from_abilities, build_meross_subdevice, \
-    build_meross_device_from_known_types
-
 from meross_iot.controller.device import BaseDevice, HubDevice, GenericSubDevice, ChannelInfo
-from meross_iot.device_factory import build_meross_device, build_meross_subdevice
+from meross_iot.device_factory import build_meross_subdevice
+from meross_iot.device_factory import build_meross_device_from_abilities, build_meross_device_from_known_types
 from meross_iot.http_api import MerossHttpClient
 from meross_iot.model.credentials import MerossCloudCreds
 from meross_iot.model.enums import Namespace, OnlineStatus
@@ -39,8 +31,10 @@ from meross_iot.model.push.generic import GenericPushNotification
 from meross_iot.model.push.unbind import UnbindPushNotification
 from meross_iot.utilities.limiter import RateLimitChecker, RateLimitResult, RateLimitResultStrategy
 from meross_iot.utilities.mqtt import generate_mqtt_password, generate_client_and_app_id, build_client_response_topic, \
-    build_client_user_topic, verify_message_signature, device_uuid_from_push_notification, build_device_request_topic
     build_client_user_topic, verify_message_signature, device_uuid_from_push_notification, build_device_request_topic, \
+    APPLIANCE_PUBLISH_TOPIC_PATH, extract_device_uuid_from_topic
+
+build_client_user_topic, verify_message_signature, device_uuid_from_push_notification, build_device_request_topic, \
     APPLIANCE_PUBLISH_TOPIC_PATH, extract_device_uuid_from_topic
 
 logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.INFO, stream=sys.stdout)
@@ -125,7 +119,7 @@ class MerossManager(object):
         self._client_response_topic = build_client_response_topic(user_id=self._cloud_creds.user_id,
                                                                   app_id=self._app_id)
         self._user_topic = build_client_user_topic(user_id=self._cloud_creds.user_id)
-        self._topics = [(self._user_topic, 0), (self._client_response_topic, 0)]
+        self._topics = [(self._user_topic, 1), (self._client_response_topic, 1)]
 
         # Setup a rate limiter
         self._over_limit_threshold = over_limit_threshold_percentage
@@ -340,7 +334,7 @@ class MerossManager(object):
         self._device_registry.enroll_device(subdevice)
         return subdevice
 
-    async def _async_enroll_new_http_dev(self, device_info: HttpDeviceInfo) -> Optional[BaseDevice]:
+    async def _async_enroll_new_http_dev(self, device_info: DeviceInfo) -> Optional[BaseDevice]:
         # If the device is online, try to query the device for its abilities.
         device = None
         abilities = None
@@ -379,7 +373,7 @@ class MerossManager(object):
         _LOGGER.debug(f"Connected with result code {rc}")
         # Subscribe to the relevant topics
         _LOGGER.debug("Subscribing to topics...")
-        client.subscribe([(self._user_topic, 0), (self._client_response_topic, 0)], qos=1)
+        client.subscribe(self._topics)
 
     def _on_disconnect(self, client, userdata, rc):
         # NOTE! This method is called by the paho-mqtt thread, thus any invocation to the
@@ -700,7 +694,7 @@ class MerossManager(object):
                     _LOGGER.warning("Could not contact local device via HTTP...")
 
         if response is None:
-            response = await self._async_send_and_wait_ack_mqtt(future=fut,
+            response = await self._async_send_and_wait_ack(future=fut,
                                                                 target_device_uuid=destination_device_uuid,
                                                                 message=message,
                                                                 timeout=timeout)
@@ -785,7 +779,7 @@ class LocalMerossManager(MerossManager):
         super().__init__(creds, *args, **kwords)
         # We also need to subscribe to /appliance/+/publish topic so that we can discover new devices
         # as soon as they publish any data on mqtt
-        self._topics.append((APPLIANCE_PUBLISH_TOPIC_PATH, 0))
+        self._topics.append((APPLIANCE_PUBLISH_TOPIC_PATH, 1))
 
     def _dispatch_message(self,
                           message_id: str,
@@ -857,14 +851,6 @@ class LocalMerossManager(MerossManager):
                                            method="GET",
                                            namespace=Namespace.SYSTEM_ALL,
                                            payload={})
-        # FIXME:
-        #  Device channels are provided by HTTP api, which cannot be used for local-only approach.
-        #  To work this around, we try to derive such info from the response of channel-aware commands,
-        #  such as toggle/togglex (if they are supported). This is really ugly, but for now, it's the only way...
-        channels = self._derive_channels_from_digest(all.get('all').get('digest'))
-
-        device_system_info = SystemInfo.from_dict(all.get('all').get('system'))
-
         # Retrieve device abilities
         res_abilities = await self.async_execute_cmd(destination_device_uuid=meross_device_uuid,
                                                      method="GET",
@@ -872,6 +858,14 @@ class LocalMerossManager(MerossManager):
                                                      payload={})
         abilities = res_abilities.get('ability')
         _LOGGER.debug("Device %s reported the following abilities: %s", meross_device_uuid, abilities)
+
+        # FIXME:
+        #  Device channels are provided by HTTP api, which cannot be used for local-only approach.
+        #  To work this around, we try to derive such info from the response of channel-aware commands,
+        #  such as toggle/togglex (if they are supported). This is really ugly, but for now, it's the only way...
+        # FIXME: USB channels are not recognized in this way.
+        channels = self._derive_channels_from_digest(all.get('all').get('digest'))
+        device_system_info = SystemInfo.from_dict(all.get('all').get('system'))
 
         # The device name is provided by the HTTP api and we cannot use it.
         # When possible, assign the name by looking into the dictionary provided at initialization time.
@@ -889,7 +883,7 @@ class LocalMerossManager(MerossManager):
                           bind_time=None,  # This is provided by HTTP API. We don't have that!
                           device_type=device_system_info.hardware.type,
                           sub_type=device_system_info.hardware.sub_type,
-                          channels=[],  # TODO: This is provided by HTTP API. We don't have that!
+                          channels=channels,
                           region=None,  # This is provided by HTTP API. We don't have that!
                           fmware_version=device_system_info.firmware.version,
                           hdware_version=device_system_info.hardware.version,
@@ -901,14 +895,14 @@ class LocalMerossManager(MerossManager):
                           )
 
         # Build a full-featured device using the given ability set
-        device = build_meross_device(device_info=info, device_abilities=abilities, manager=self)
+        device = build_meross_device_from_abilities(device_info=info, device_abilities=abilities, manager=self)
 
         _LOGGER.debug("Built wrapper for device type %s", device.type)
 
         # Enroll the device
         self._device_registry.enroll_device(device)
 
-    def _derive_channels_from_digest(self, digest: dict) -> List[ChannelInfo]:
+    def _derive_channels_from_digest(self, digest: dict) -> List[Dict]:
         channels = []
         toggleinfo = digest.get('toggle')
         togglexinfo = digest.get('togglex')
@@ -916,11 +910,7 @@ class LocalMerossManager(MerossManager):
             # TODO: make sure we can determine multiple channels also with the toggle info.
             raise NotImplementedError()
         elif togglexinfo is not None:
-            for c in togglexinfo:
-                channels.append(
-                    ChannelInfo(index=c['channel'],
-                                name=c.get('name'),
-                                is_master_channel=c['channel'] == 0))  # Assume first is the master channel
+            return togglexinfo
         else:
             _LOGGER.warning("Failed to determine the channels available on this device.")
         return channels
@@ -1039,7 +1029,7 @@ class RemoteMerossManager(MerossManager):
             return None
 
         # Build a full-featured device using the given ability set
-        device = build_meross_device(device_info=device_info, device_abilities=abilities, manager=self)
+        device = build_meross_device_from_abilities(device_info=device_info, device_abilities=abilities, manager=self)
 
         # Enroll the device
         self._device_registry.enroll_device(device)

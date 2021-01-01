@@ -1,7 +1,6 @@
 import base64
 import logging
 import os
-
 from typing import Tuple
 
 from meross_iot.http_api import MerossHttpClient

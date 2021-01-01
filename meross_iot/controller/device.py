@@ -8,7 +8,6 @@ from typing import List, Union, Optional, Iterable, Callable, Awaitable, Dict
 
 from meross_iot.model.enums import OnlineStatus, Namespace
 from meross_iot.model.http.device import DeviceInfo
-from datetime import datetime
 from meross_iot.model.plugin.hub import BatteryInfo
 
 _LOGGER = logging.getLogger(__name__)
@@ -252,7 +251,7 @@ class BaseDevice(object):
             return res
 
         for i, val in enumerate(channel_data):
-            name = val.get('devName', 'Main channel')
+            name = val.get('devName', f'Channel {i}')
             type = val.get('type')
             master = i == 0
             res.append(ChannelInfo(index=i, name=name, channel_type=type, is_master_channel=master))
